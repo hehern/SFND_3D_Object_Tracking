@@ -136,40 +136,13 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // compute the average euclidean distances between keypoint matches
-    double distance_aver = 0;
-    int keyPointsNumber = 0;
-    for(auto match : kptMatches)
-    {
-        int preKeyInd = match.queryIdx;
-        int curKeyInd = match.trainIdx;
-        // Determine whether the KeyPoint belongs to the boundingBox
-        if(boundingBox.roi.contains(kptsCurr[curKeyInd].pt))
-        {
-            keyPointsNumber++;
-            distance_aver += std::sqrt(std::pow((kptsCurr[curKeyInd].pt.x-kptsCurr[preKeyInd].pt.x),2)+std::pow((kptsCurr[curKeyInd].pt.y-kptsCurr[preKeyInd].pt.y),2));
+    for (cv::DMatch match : kptMatches) {
+        if (boundingBox.roi.contains(kptsCurr[match.trainIdx].pt)) {
+            boundingBox.kptMatches.push_back(match);
         }
     }
-    distance_aver = distance_aver / keyPointsNumber;
-
-    // remove those keypoints that are too far away from the mean
-    for(auto match : kptMatches)
-    {
-        int preKeyInd = match.queryIdx;
-        int curKeyInd = match.trainIdx;
-        // Determine whether the KeyPoint belongs to the boundingBox
-        if(boundingBox.roi.contains(kptsCurr[curKeyInd].pt))
-        {
-            int distance = std::sqrt(std::pow((kptsCurr[curKeyInd].pt.x-kptsCurr[preKeyInd].pt.x),2)+std::pow((kptsCurr[curKeyInd].pt.y-kptsCurr[preKeyInd].pt.y),2));
-            if(distance < distance_aver*1.2 && distance > distance_aver*0.8)
-            {
-                boundingBox.keypoints.push_back(kptsCurr[curKeyInd]);
-                boundingBox.kptMatches.push_back(match);
-            }
-        }
-    }
-
     // the end
+
 }
 
 
@@ -224,83 +197,92 @@ void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPo
     double meanDistRatio = distRatios.size()%2==0 ? (distRatios[middle_index-1]+distRatios[middle_index])/2.0 : distRatios[middle_index];
     double dT = 1 / frameRate;
     TTC = -dT / (1 - meanDistRatio);
+  
+
+}
+
+
+double getMiddle_x_dimen(std::vector<LidarPoint> lidarPoints)
+{
+    vector<double> x;
+    int number = lidarPoints.size();
+    for(int i=0; i<number; i++)
+    {
+        x.push_back(lidarPoints[i].x);
+    }
+    std::sort(x.begin(),x.end());
+    auto middle_index = std::floor(x.size()/2.0);
+    double middle_value = x.size()%2==0 ? (x[middle_index-1]+x[middle_index])/2.0 : x[middle_index];
+    return middle_value;
 }
 
 
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
-    // compute the center of the pointcloud
-    // -pre_pointcloud
-    int lidar_pre_num = lidarPointsPrev.size();
-    int pre_x_aver = 0;
-    int pre_y_aver = 0;
-    for(int i=0; i<lidar_pre_num; i++)
-    {
-        pre_x_aver += lidarPointsPrev[i].x;
-        pre_y_aver += lidarPointsPrev[i].y;
-    }
-    pre_x_aver = pre_x_aver / lidar_pre_num;
-    pre_y_aver = pre_y_aver / lidar_pre_num;
-    // -curr_pointcloud
-    int lidar_cur_num = lidarPointsCurr.size();
-    int cur_x_aver = 0;
-    int cur_y_aver = 0;
-    for(int i=0; i<lidar_cur_num; i++)
-    {
-        cur_x_aver += lidarPointsCurr[i].x;
-        cur_y_aver += lidarPointsCurr[i].y;
-    }
-    cur_x_aver = cur_x_aver / lidar_pre_num;
-    cur_y_aver = cur_y_aver / lidar_pre_num;
 
-    // compute the nearest distance of curr-pointcloud
-    int cur_x_min = std::numeric_limits<int>::max();
-    for(int i=0; i<lidar_cur_num; i++)
-    {
-        if(lidarPointsCurr[i].x < cur_x_min) cur_x_min = lidarPointsCurr[i].x;
-    }
+    // The shape of the point cloud objects will be very different each frame,
+    // so we should use the middle value instead of the mean value.
+    double pre_x = getMiddle_x_dimen(lidarPointsPrev);
+    double curr_x = getMiddle_x_dimen(lidarPointsCurr);
+    TTC = curr_x/((pre_x-curr_x)*frameRate);
 
-    // compute the ttc
-    TTC = cur_x_min/((pre_x_aver-cur_x_aver)*frameRate);
+  
 }
 
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
 
-    std::multimap<int, int> map{};
-    for(auto match : matches)
+    int p = prevFrame.boundingBoxes.size();
+    int c = currFrame.boundingBoxes.size();
+    int pt_counts[p][c] = { };
+    for (auto it = matches.begin(); it != matches.end() - 1; ++it)     
     {
-        int preKeyInd = match.queryIdx;
-        int curKeyInd = match.trainIdx;
-        int pre_box_id = -1;
-        int cur_box_id = -1;
-        // judge which boundingbox the keypoint belongs-preframe
-        for(auto bbox : prevFrame.boundingBoxes)
-        {
-            if(bbox.roi.contains(prevFrame.keypoints[preKeyInd].pt)) pre_box_id = bbox.boxID;
-        }
-        // judge which boundingbox the keypoint belongs-currentframe
-        for(auto bbox : currFrame.boundingBoxes)
-        {
-            if(bbox.roi.contains(currFrame.keypoints[curKeyInd].pt)) cur_box_id = bbox.boxID;
-        }
-        //pushback the boxmap
-        map.insert({cur_box_id, pre_box_id});
-    }
+        cv::KeyPoint query = prevFrame.keypoints[it->queryIdx];
+        auto query_pt = cv::Point(query.pt.x, query.pt.y);
+        bool query_found = false;
 
-    for(auto bbox : currFrame.boundingBoxes)
-    {
-        int bbox_id = bbox.boxID;
-        int pre_box_num = prevFrame.boundingBoxes.size();
-        vector<int> pre_box_count(pre_box_num, 0);
-        auto map_pair = map.equal_range(bbox_id);
-        for(auto it=map_pair.first; it!=map_pair.second; it++)
+        cv::KeyPoint train = currFrame.keypoints[it->trainIdx];
+        auto train_pt = cv::Point(train.pt.x, train.pt.y);
+        bool train_found = false;
+
+        std::vector<int> query_id, train_id;
+        for (int i = 0; i < p; i++) 
         {
-            if(it->first != -1) pre_box_count[it->second]++;
+            if (prevFrame.boundingBoxes[i].roi.contains(query_pt))            
+             {
+                query_found = true;
+                query_id.push_back(i);
+             }
         }
-        int pre_box_id = std::distance(std::begin(pre_box_count), std::max_element(std::begin(pre_box_count), std::end(pre_box_count)));
-        bbBestMatches.insert({bbox_id, pre_box_id});
+        for (int i = 0; i < c; i++) 
+        {
+            if (currFrame.boundingBoxes[i].roi.contains(train_pt))            
+            {
+                train_found= true;
+                train_id.push_back(i);
+            }
+        }
+
+        if (query_found && train_found) 
+        {
+            for (auto id_prev: query_id)
+                for (auto id_curr: train_id)
+                     pt_counts[id_prev][id_curr] += 1;
+        }
     }
+   
+    for (int i = 0; i < p; i++)
+    {  
+         int max_count = 0;
+         int id_max = 0;
+         for (int j = 0; j < c; j++)
+             if (pt_counts[i][j] > max_count)
+             {  
+                  max_count = pt_counts[i][j];
+                  id_max = j;
+             }
+          bbBestMatches[i] = id_max;
+    } 
 }
